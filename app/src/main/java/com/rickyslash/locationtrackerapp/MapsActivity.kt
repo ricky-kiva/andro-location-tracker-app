@@ -3,13 +3,17 @@ package com.rickyslash.locationtrackerapp
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.Manifest
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.location.Location
+import android.os.Looper
+import android.util.Log
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationServices
+import com.google.android.gms.common.api.ResolvableApiException
+import com.google.android.gms.location.*
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
@@ -17,12 +21,17 @@ import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.MarkerOptions
 import com.rickyslash.locationtrackerapp.databinding.ActivityMapsBinding
+import java.util.concurrent.TimeUnit
 
 class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private lateinit var mMap: GoogleMap
     private lateinit var binding: ActivityMapsBinding
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var locationRequest: LocationRequest
+
+    private var isTracking = false
+    private lateinit var locationCallback: LocationCallback
 
     private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -41,6 +50,19 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
+    // launcher to check if the failure is resolvable (can be fixed by user) (ex: set GPS permission)
+    private val resolutionLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        when (result.resultCode) {
+            RESULT_OK -> {
+                Log.i(TAG, "onActivityResult: All location settings are satisfied.")
+            }
+            RESULT_CANCELED -> {
+                Toast.makeText(this@MapsActivity, "Please activate GPS", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -52,14 +74,99 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
             .findFragmentById(R.id.map) as SupportMapFragment
 
         mapFragment.getMapAsync(this)
+
+        // instantiate FusedLocationProvider
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
     }
 
+    // function to call when map is ready
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
-        getMyLastLocation()
+
+        /* Not used because we use live location
+        getMyLastLocation()*/
+
+        // build LocationRequest
+        createLocationRequest()
+
+        // callback for when there is location update
+        createLocationCallback()
+
+
+
+        binding.btnStart.setOnClickListener {
+            if (!isTracking) {
+                updateTrackingStatus(true)
+                startLocationUpdates()
+            } else {
+                updateTrackingStatus(false)
+                stopLocationUpdates()
+            }
+        }
     }
 
+    // function to start location updates
+    private fun startLocationUpdates() {
+        try {
+            // do location updates
+            fusedLocationClient.requestLocationUpdates(
+                locationRequest,
+                locationCallback,
+                Looper.getMainLooper()
+            )
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Error: ${e.message}")
+        }
+    }
+
+    // function to stop location updates
+    private fun stopLocationUpdates() {
+        // remove location update for the callback
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+    }
+
+    private fun createLocationCallback() {
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(p0: LocationResult) {
+                for (location in p0.locations) {
+                    Log.d(TAG, "onLocationResult: ${location.latitude}, ${location.longitude}")
+                }
+            }
+        }
+    }
+
+    private fun createLocationRequest() {
+        // set parameter for LocationRequest
+        locationRequest = LocationRequest.create().apply {
+            interval = TimeUnit.SECONDS.toMillis(1)
+            maxWaitTime = TimeUnit.SECONDS.toMillis(1)
+            priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+        }
+
+        // make new instance of LocationRequest using parameter from `locationRequest` var
+        val builder = LocationSettingsRequest.Builder()
+            .addLocationRequest(locationRequest)
+
+        // check whether the `device location settings` are configured appropriately for app's needs
+        // example: if app require high-accuracy, request checks if device location settings are set to high-accuracy also
+        val client = LocationServices.getSettingsClient(this)
+        client.checkLocationSettings(builder.build())
+            .addOnSuccessListener {
+                getMyLastLocation()
+            }
+            .addOnFailureListener { e ->
+                // checks if the failure is resolvable (can be fixed by user) (ex: set GPS permission)
+                if (e is ResolvableApiException) {
+                    try {
+                        resolutionLauncher.launch(IntentSenderRequest.Builder(e.resolution).build())
+                    } catch (sendEx: IntentSender.SendIntentException) {
+                        Toast.makeText(this@MapsActivity, sendEx.message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+    }
+
+    // get the latest map
     private fun getMyLastLocation() {
         if (checkPermission(Manifest.permission.ACCESS_FINE_LOCATION) && checkPermission(Manifest.permission.ACCESS_COARSE_LOCATION)) {
             fusedLocationClient.lastLocation.addOnSuccessListener { loc: Location? ->
@@ -79,6 +186,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
+    // show marker on start
     private fun showStartMarker(loc: Location) {
         val startLocation = LatLng(loc.latitude, loc.longitude)
         mMap.addMarker(
@@ -89,8 +197,33 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
         mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(startLocation, 17f))
     }
 
+    private fun updateTrackingStatus(newStatus: Boolean) {
+        isTracking = newStatus
+        if (isTracking) {
+            binding.btnStart.text = getString(R.string.stop_running)
+        } else {
+            binding.btnStart.text = getString(R.string.start_running)
+        }
+    }
+
     private fun checkPermission(permission: String): Boolean {
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (isTracking) {
+            startLocationUpdates()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        stopLocationUpdates()
+    }
+
+    companion object {
+        private const val TAG = "MapsActivity"
     }
 
 }
