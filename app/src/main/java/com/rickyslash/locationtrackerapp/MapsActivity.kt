@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.Manifest
 import android.content.IntentSender
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.location.Location
 import android.os.Looper
 import android.util.Log
@@ -19,7 +20,9 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.PolylineOptions
 import com.rickyslash.locationtrackerapp.databinding.ActivityMapsBinding
 import java.util.concurrent.TimeUnit
 
@@ -31,6 +34,8 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
     private lateinit var locationRequest: LocationRequest
 
     private var isTracking = false
+    private var allLatLng = ArrayList<LatLng>()
+    private var boundsBuilder = LatLngBounds.Builder()
     private lateinit var locationCallback: LocationCallback
 
     private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()
@@ -96,6 +101,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
 
         binding.btnStart.setOnClickListener {
             if (!isTracking) {
+                clearMaps()
                 updateTrackingStatus(true)
                 startLocationUpdates()
             } else {
@@ -130,6 +136,21 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
             override fun onLocationResult(p0: LocationResult) {
                 for (location in p0.locations) {
                     Log.d(TAG, "onLocationResult: ${location.latitude}, ${location.longitude}")
+
+                    // draw polyline
+                    val lastLatLng = LatLng(location.latitude, location.longitude)
+                    allLatLng.add(lastLatLng)
+                    mMap.addPolyline(
+                        PolylineOptions()
+                            .color(Color.RED)
+                            .width(10f)
+                            .addAll(allLatLng)
+                    )
+
+                    // adjust camera to bounds with polyline route
+                    boundsBuilder.include(lastLatLng)
+                    val bounds: LatLngBounds = boundsBuilder.build()
+                    mMap.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 64))
                 }
             }
         }
@@ -208,6 +229,12 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun checkPermission(permission: String): Boolean {
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun clearMaps() {
+        mMap.clear()
+        allLatLng.clear()
+        boundsBuilder = LatLngBounds.Builder()
     }
 
     override fun onResume() {
